@@ -12,6 +12,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+import torch
+
+# Check if CUDA is available
+print("CUDA available: ", torch.cuda.is_available())
+
+# Print the name of the GPU
+if torch.cuda.is_available():
+    print("GPU name: ", torch.cuda.get_device_name(0))
 import argparse
 import logging
 import math
@@ -176,6 +185,9 @@ def main(args):
     # Create the output directory
     os.makedirs(args.output_dir, exist_ok=True)
 
+    # Create directory for attention related items
+    os.makedirs(args.attn_map_dir, exist_ok=True)
+
     if args.config_preset.startswith("seq"):
         args.use_single_seq_mode = True
 
@@ -277,6 +289,14 @@ def main(args):
         raise ValueError(
             '`openfold_checkpoint_path` was specified, but no OpenFold checkpoints are available for multimer mode')
 
+    config.attn_map_dir = args.attn_map_dir
+    config.num_recycles_save = args.num_recycles_save
+    attention_config = {
+                "demo_attn": args.demo_attn,
+                "triangle_residue_idx": args.triangle_residue_idx,
+        }
+    config.attention_config = attention_config
+    print('attention config: ', attention_config)
     model_generator = load_models_from_command_line(
         config,
         args.model_device,
@@ -385,6 +405,9 @@ def main(args):
 
 
 if __name__ == "__main__":
+    seed = 42
+    torch.manual_seed(seed)
+    np.random.seed(seed)
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "fasta_dir", type=str,
@@ -482,8 +505,23 @@ if __name__ == "__main__":
         "--use_deepspeed_evoformer_attention", action="store_true", default=False, 
         help="Whether to use the DeepSpeed evoformer attention layer. Must have deepspeed installed in the environment.",
     )
+    parser.add_argument(
+        "--attn_map_dir", type=str, default=''
+    )
+    parser.add_argument(
+        "--num_recycles_save", type=int, default=None,
+        help="Number of recycling iterations to run in the model. If None, uses config default."
+    )
+    parser.add_argument(
+        "--demo_attn", action='store_true', default=False
+    )
+    parser.add_argument(
+        "--triangle_residue_idx", default=None, type=int  # for demo visualizations we need to select a residue idx
+    )
     add_data_args(parser)
     args = parser.parse_args()
+    print('args: ')
+    print(args)
 
     if args.jax_param_path is None and args.openfold_checkpoint_path is None:
         args.jax_param_path = os.path.join(

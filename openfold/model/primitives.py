@@ -14,8 +14,9 @@
 # limitations under the License.
 import importlib
 import math
-from typing import Optional, Callable, List, Tuple
+from typing import Optional, Callable, List, Tuple, Dict
 import numpy as np
+import threading
 
 deepspeed_is_installed = importlib.util.find_spec("deepspeed") is not None
 ds4s_is_installed = deepspeed_is_installed and importlib.util.find_spec("deepspeed.ops.deepspeed4science") is not None
@@ -41,6 +42,9 @@ from openfold.utils.tensor_utils import (
     permute_final_dims,
     flatten_final_dims,
 )
+
+ATTENTION_METADATA = threading.local()
+ATTENTION_METADATA.buffer = {}
 
 
 DEFAULT_LMA_Q_CHUNK_SIZE = 1024
@@ -264,7 +268,14 @@ def softmax_no_cast(t: torch.Tensor, dim: int = -1) -> torch.Tensor:
 
 
 #@torch.jit.script
-def _attention(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, biases: List[torch.Tensor]) -> torch.Tensor:
+def _attention(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, biases: List[torch.Tensor],
+attention_config: Optional[Dict[str, any]] = None,
+) -> torch.Tensor:
+    if attention_config is None:
+        attention_config = {}
+    demo_attn = attention_config.get("demo_attn", False)
+    layer_name = attention_config.get("layer_name", "unknown_layer")
+    
     # [*, H, C_hidden, K]
     key = permute_final_dims(key, (1, 0))
 
@@ -276,6 +287,13 @@ def _attention(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, bias
 
     a = softmax_no_cast(a, -1)
 
+    # Save most recent attention map
+    if demo_attn and layer_name != "unknown_layer":
+        if not hasattr(ATTENTION_METADATA, "recent_attention"):
+            ATTENTION_METADATA.recent_attention = {}
+        ATTENTION_METADATA.recent_attention.setdefault(layer_name, []).append(a.detach().cpu().numpy())
+        # print(f"\t[Recent Attention] Saved most recent attention for: {layer_name}")
+    
     # [*, H, Q, C_hidden]
     a = torch.matmul(a, value)
 
@@ -350,6 +368,7 @@ class Attention(nn.Module):
         c_hidden: int,
         no_heads: int,
         gating: bool = True,
+        attention_config: Optional[Dict[str, any]] = None,
     ):
         """
         Args:
@@ -374,6 +393,7 @@ class Attention(nn.Module):
         self.c_hidden = c_hidden
         self.no_heads = no_heads
         self.gating = gating
+        self.attention_config = attention_config
 
         # DISCREPANCY: c_hidden is not the per-head channel dimension, as
         # stated in the supplement, but the overall channel dimension.
@@ -539,7 +559,13 @@ class Attention(nn.Module):
         elif use_flash:
             o = _flash_attn(q, k, v, flash_mask)
         else:
-            o = _attention(q, k, v, biases)
+            attention_config = dict(self.attention_config) if self.attention_config is not None else {}
+
+            layer_name = getattr(self, "_attention_name", None)
+            if layer_name is not None:
+                attention_config["layer_name"] = layer_name
+
+            o = _attention(q, k, v, biases, attention_config=attention_config)
             o = o.transpose(-2, -3)
 
         o = self._wrap_up(o, q_x)

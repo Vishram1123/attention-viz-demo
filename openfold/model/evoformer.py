@@ -14,15 +14,18 @@
 # limitations under the License.
 import math
 import sys
+import os
+import numpy as np
 import torch
 import torch.nn as nn
 from typing import Tuple, Sequence, Optional
 from functools import partial
 from abc import ABC, abstractmethod
 
-from openfold.model.primitives import Linear, LayerNorm
+from openfold.model.primitives import Linear, LayerNorm, ATTENTION_METADATA
 from openfold.model.dropout import DropoutRowwise, DropoutColumnwise
 from openfold.model.msa import (
+    MSAAttention,
     MSARowAttentionWithPairBias,
     MSAColumnAttention,
     MSAColumnGlobalAttention,
@@ -131,7 +134,8 @@ class PairStack(nn.Module):
         pair_dropout: float,
         fuse_projection_weights: bool,
         inf: float,
-        eps: float
+        eps: float,
+        attention_config=None,
     ):
         super(PairStack, self).__init__()
 
@@ -159,12 +163,14 @@ class PairStack(nn.Module):
             c_hidden_pair_att,
             no_heads_pair,
             inf=inf,
+            attention_config=attention_config,
         )
         self.tri_att_end = TriangleAttention(
             c_z,
             c_hidden_pair_att,
             no_heads_pair,
             inf=inf,
+            attention_config=attention_config,
         )
 
         self.pair_transition = PairTransition(
@@ -284,10 +290,13 @@ class MSABlock(nn.Module, ABC):
         fuse_projection_weights: bool,
         inf: float,
         eps: float,
+        attn_map_dir: str='',
+        attention_config=None,
     ):
         super(MSABlock, self).__init__()
 
         self.opm_first = opm_first
+        self.attn_map_dir = attn_map_dir
 
         self.msa_att_row = MSARowAttentionWithPairBias(
             c_m=c_m,
@@ -295,6 +304,7 @@ class MSABlock(nn.Module, ABC):
             c_hidden=c_hidden_msa_att,
             no_heads=no_heads_msa,
             inf=inf,
+            attention_config=attention_config,
         )
 
         self.msa_dropout_layer = DropoutRowwise(msa_dropout)
@@ -319,7 +329,8 @@ class MSABlock(nn.Module, ABC):
             pair_dropout=pair_dropout,
             fuse_projection_weights=fuse_projection_weights,
             inf=inf,
-            eps=eps
+            eps=eps,
+            attention_config=attention_config,
         )
 
     def _compute_opm(self,
@@ -373,6 +384,143 @@ class MSABlock(nn.Module, ABC):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         pass
 
+def parse_attention_metadata_key(key):
+    """
+    Parse attention metadata keys like:
+    'msa_attention_block_47_attn_0_recycle_0' 
+    or 
+    'tri_attention_block_47_attn_0_recycle_0'
+    
+    Returns:
+        attn_type: "msa_row_attn" or "triangle_start_attn"
+        layer_idx: int
+    """
+    parts = key.split('_')
+
+    # Early checks
+    if not (key.startswith("msa_attention") or key.startswith("tri_attention")):
+        return None, -1
+
+    # Find block index and layer index
+    try:
+        block_idx = parts.index("block")
+        layer_idx = int(parts[block_idx + 1])
+    except (ValueError, IndexError):
+        layer_idx = -1
+
+    # Now check attn number
+    try:
+        attn_idx = parts.index("attn")
+        attn_num = int(parts[attn_idx + 1])
+    except (ValueError, IndexError):
+        attn_num = -1
+
+    if attn_num != 0:
+        return None, -1  # Only process attn_0 types
+
+    # Determine attention type
+    if key.startswith("msa_attention"):
+        attn_type = "msa_row_attn"
+    elif key.startswith("tri_attention"):
+        attn_type = "triangle_start_attn"
+    else:
+        attn_type = None
+
+    return attn_type, layer_idx
+
+
+def save_attention_topk(attention_dict, save_dir, layer_name, layer_idx, attn_type, triangle_residue_idx, top_k=500):
+    """
+    Save the top K attention values for MSA Row and Triangle Start attention maps.
+    
+    Args:
+        attention_dict (dict): Dictionary holding recent attention maps.
+        save_dir (str): Directory to save output text files.
+        layer_name (str): Full name of the layer.
+        layer_idx (int): Layer number.
+        attn_type (str): Either "msa_row_attn" or "triangle_start_attn".
+        top_k (int): Number of top values to save.
+    """
+
+    if layer_name not in attention_dict:
+        print(f"[Warning] Layer {layer_name} not found in recent attention.")
+        return
+
+    attn_array = attention_dict[layer_name]
+
+    if isinstance(attn_array, list):
+        attn_array = attn_array[0] if len(attn_array) == 1 else np.concatenate(attn_array, axis=0)
+
+    if attn_type == "msa_row_attn":
+        # Shape: (M, N, S, S)
+        attn_array = attn_array[0]  # Now: (N, S, S)
+
+    elif attn_type == "triangle_start_attn":
+        # Shape: (Q, R, S, S)
+        if triangle_residue_idx is None:
+            print(f"[Warning] Triangle residue index not provided. Using average of all residues.")
+            attn_array = np.mean(attn_array, axis=0)  # Now: (R, S, S)
+            triangle_residue_idx = 'avg'
+        else:
+            attn_array = attn_array[triangle_residue_idx]
+            triangle_residue_idx = str(triangle_residue_idx)
+    else:
+        raise ValueError(f"Unknown attention type: {attn_type}")
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    if attn_type == "msa_row_attn":
+        output_path = os.path.join(save_dir, f"{attn_type}_layer{layer_idx}.txt")
+    elif attn_type == "triangle_start_attn":
+        output_path = os.path.join(save_dir, f"{attn_type}_layer{layer_idx}_residue_idx_{triangle_residue_idx}.txt")
+
+    with open(output_path, "w") as f:
+        num_heads = attn_array.shape[0]
+        S = attn_array.shape[1]
+
+        for head_idx in range(num_heads):
+            attn_map = attn_array[head_idx]  # Shape: (S, S)
+
+            total_entries = S * S
+            k = min(top_k, total_entries)
+
+            flat_indices = np.argsort(attn_map.flatten())[::-1][:k]
+            row_indices, col_indices = np.unravel_index(flat_indices, (S, S))
+            scores = attn_map[row_indices, col_indices]
+
+            # Write header
+            f.write(f"Layer {layer_idx}, Head {head_idx}\n")
+
+            for r, c, s in zip(row_indices, col_indices, scores):
+                f.write(f"{r} {c} {s:.6f}\n")
+
+    print(f"[Done] Saved top {top_k} entries for {attn_type} to {output_path}")
+
+
+def save_all_topk_from_recent_attention(save_dir, triangle_residue_idx, top_k=500):
+    """
+    Scan ATTENTION_METADATA.recent_attention and save top-K attention maps for MSA and Triangle.
+    
+    Args:
+        save_dir (str): Where to store the txt files.
+        top_k (int): How many top values to save per head.
+    """
+    os.makedirs(save_dir, exist_ok=True)
+
+    for k in ATTENTION_METADATA.recent_attention.keys():
+        attn_type, layer_idx = parse_attention_metadata_key(k)
+
+        if attn_type is not None and layer_idx >= 0:
+            save_attention_topk(
+                attention_dict=ATTENTION_METADATA.recent_attention,
+                save_dir=save_dir,
+                layer_name=k,
+                layer_idx=layer_idx,
+                attn_type=attn_type,
+                triangle_residue_idx=triangle_residue_idx,
+                top_k=top_k
+            )
+
 
 class EvoformerBlock(MSABlock):
     def __init__(self,
@@ -392,6 +540,8 @@ class EvoformerBlock(MSABlock):
         fuse_projection_weights: bool,
         inf: float,
         eps: float,
+        attn_map_dir: str='',
+        attention_config=None,
     ):
         super(EvoformerBlock, self).__init__(c_m=c_m,
                                              c_z=c_z,
@@ -407,10 +557,14 @@ class EvoformerBlock(MSABlock):
                                              opm_first=opm_first,
                                              fuse_projection_weights=fuse_projection_weights,
                                              inf=inf,
-                                             eps=eps)
+                                             eps=eps,
+                                             attn_map_dir=attn_map_dir,
+                                             attention_config=attention_config,
+                                             )
 
         # Specifically, seqemb mode does not use column attention
         self.no_column_attention = no_column_attention
+        self.attention_config = attention_config
 
         if not self.no_column_attention:
             self.msa_att_col = MSAColumnAttention(
@@ -418,6 +572,7 @@ class EvoformerBlock(MSABlock):
                 c_hidden_msa_att,
                 no_heads_msa,
                 inf=inf,
+                attention_config=attention_config,
             )
 
     def forward(self,
@@ -549,6 +704,17 @@ class EvoformerBlock(MSABlock):
         else:
             m = input_tensors[0]
 
+        loop_idx = getattr(self, "loop_idx", 0)
+        filename = f"{self._layer_name}" + '_recycle_%d' % loop_idx
+        print('\t' + filename)
+        with torch.no_grad():
+
+            # compute top-k and save to text file for demo
+            if self.attention_config.get("demo_attn", False) and hasattr(ATTENTION_METADATA, "recent_attention"):
+                triangle_residue_idx = self.attention_config.get("triangle_residue_idx", None)
+                save_all_topk_from_recent_attention(self.attn_map_dir, triangle_residue_idx, top_k=500)
+                # Clear after use to free memory
+                ATTENTION_METADATA.recent_attention.clear()
         return m, z
 
 
@@ -576,6 +742,7 @@ class ExtraMSABlock(MSABlock):
         inf: float,
         eps: float,
         ckpt: bool,
+        attention_config=None,
     ):
         super(ExtraMSABlock, self).__init__(c_m=c_m,
                                             c_z=c_z,
@@ -591,7 +758,9 @@ class ExtraMSABlock(MSABlock):
                                             opm_first=opm_first,
                                             fuse_projection_weights=fuse_projection_weights,
                                             inf=inf,
-                                            eps=eps)
+                                            eps=eps,
+                                            attention_config=attention_config,
+                                            )
 
         self.ckpt = ckpt
 
@@ -775,6 +944,8 @@ class EvoformerStack(nn.Module):
         eps: float,
         clear_cache_between_blocks: bool = False, 
         tune_chunk_size: bool = False,
+        attn_map_dir: str='',
+        attention_config=None,
         **kwargs,
     ):
         """
@@ -828,6 +999,7 @@ class EvoformerStack(nn.Module):
 
         self.blocks_per_ckpt = blocks_per_ckpt
         self.clear_cache_between_blocks = clear_cache_between_blocks
+        self.attn_map_dir = attn_map_dir
 
         self.blocks = nn.ModuleList()
 
@@ -849,6 +1021,8 @@ class EvoformerStack(nn.Module):
                 fuse_projection_weights=fuse_projection_weights,
                 inf=inf,
                 eps=eps,
+                attn_map_dir=attn_map_dir,
+                attention_config=attention_config,
             )
             self.blocks.append(block)
 
@@ -858,6 +1032,55 @@ class EvoformerStack(nn.Module):
         self.chunk_size_tuner = None
         if(tune_chunk_size):
             self.chunk_size_tuner = ChunkSizeTuner()
+
+        # naming for easily grabbing features and attention maps
+        self.assign_layer_names()
+
+        self.forward_counter = 0  # Track global forward passes
+
+        # Register hook for all EvoformerBlocks and attention layers
+        for block in self.blocks:
+            block.register_forward_pre_hook(self.inject_counter)  # Hook for EvoformerBlock
+            for submodule in block.modules():
+                if isinstance(submodule, (MSAAttention, TriangleAttention)):
+                    submodule.register_forward_pre_hook(self.inject_counter)
+
+    def inject_counter(self, module, inputs):
+        """Dynamically injects forward_counter into EvoformerBlocks and attention layers."""
+        setattr(module, "loop_idx", self.forward_counter)
+
+    def assign_layer_names(self):
+        """Assigns unique names to each MSAAttention, TriangleAttention, EvoformerBlock layer"""
+        msa_block = 0
+        msa_counter = 0
+        tri_block = 0
+        tri_counter = 0
+        block_counter = 0
+        for name, module in self.named_modules():
+            if isinstance(module, (MSAAttention)):
+                block = name.split('blocks.')[1].split('.')[0]
+                if block != msa_block:
+                    msa_block = block
+                    msa_counter = 0
+                module._attention_name = f"msa_attention_block_{msa_block}_attn_{msa_counter}"  # Assign a unique name
+                if hasattr(module, "mha"):
+                    module.mha._attention_name = module._attention_name
+                # print(f"Assigned: {module._attention_name} to {name}")
+                msa_counter += 1
+            elif isinstance(module, (TriangleAttention)):
+                block = name.split('blocks.')[1].split('.')[0]
+                if block != tri_block:
+                    tri_block = block
+                    tri_counter = 0
+                module._attention_name = f"tri_attention_block_{tri_block}_attn_{tri_counter}"  # Assign a unique name
+                if hasattr(module, "mha"):
+                    module.mha._attention_name = module._attention_name
+                # print(f"Assigned: {module._attention_name} to {name}")
+                tri_counter += 1
+            elif isinstance(module, (EvoformerBlock)):
+                module._layer_name = f"evo_block_{block_counter}"  # Assign a unique name
+                # print(f"Assigned: {module._layer_name} to {name}")
+                block_counter += 1
 
     def _prep_blocks(self, 
         m: torch.Tensor, 
@@ -1021,7 +1244,8 @@ class EvoformerStack(nn.Module):
         )
 
         s = self.linear(m[..., 0, :, :])
-
+        self.forward_counter += 1  # Increment automatically on each forward pass
+        
         return m, z, s
 
 
@@ -1049,6 +1273,7 @@ class ExtraMSAStack(nn.Module):
         ckpt: bool,
         clear_cache_between_blocks: bool = False,
         tune_chunk_size: bool = False,
+        attention_config=None,
         **kwargs,
     ):
         super(ExtraMSAStack, self).__init__()
@@ -1074,6 +1299,7 @@ class ExtraMSAStack(nn.Module):
                 inf=inf,
                 eps=eps,
                 ckpt=False,
+                attention_config=attention_config,
             )
             self.blocks.append(block)
             

@@ -42,6 +42,7 @@ class MSAAttention(nn.Module):
         pair_bias=False,
         c_z=None,
         inf=1e9,
+        attention_config=None,
     ):
         """
         Args:
@@ -84,6 +85,7 @@ class MSAAttention(nn.Module):
             self.c_in, 
             self.c_hidden, 
             self.no_heads,
+            attention_config=attention_config,
         )
 
     @torch.jit.ignore
@@ -245,6 +247,7 @@ class MSAAttention(nn.Module):
                 cost of slower execution. Chunking is not performed by default.
                 
         """
+
         if(_chunk_logits is not None):
             return self._chunked_msa_attn(
                 m=m, z=z, mask=mask, 
@@ -297,7 +300,8 @@ class MSARowAttentionWithPairBias(MSAAttention):
     Implements Algorithm 7.
     """
 
-    def __init__(self, c_m, c_z, c_hidden, no_heads, inf=1e9):
+    def __init__(self, c_m, c_z, c_hidden, no_heads, inf=1e9,
+                 attention_config=None,):
         """
         Args:
             c_m:
@@ -318,6 +322,7 @@ class MSARowAttentionWithPairBias(MSAAttention):
             pair_bias=True,
             c_z=c_z,
             inf=inf,
+            attention_config=attention_config,
         )
 
 
@@ -329,7 +334,8 @@ class MSAColumnAttention(nn.Module):
     most inheritance isn't supported by TorchScript.
     """
 
-    def __init__(self, c_m, c_hidden, no_heads, inf=1e9):
+    def __init__(self, c_m, c_hidden, no_heads, inf=1e9,
+                 attention_config=None):
         """
         Args:
             c_m:
@@ -355,6 +361,7 @@ class MSAColumnAttention(nn.Module):
             pair_bias=False,
             c_z=None,
             inf=inf,
+            attention_config=attention_config,
         )
 
     def forward(self, 

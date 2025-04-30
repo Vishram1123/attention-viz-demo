@@ -78,10 +78,18 @@ class AlphaFold(nn.Module):
         super(AlphaFold, self).__init__()
 
         self.globals = config.globals
+        self.globals.chunk_size = None # TURNING OFF CHUNK SIZE FOR CONSISTENT RESULTS!
         self.config = config.model
         self.template_config = self.config.template
         self.extra_msa_config = self.config.extra_msa
         self.seqemb_mode = config.globals.seqemb_mode_enabled
+        self.orig_config = config
+
+        # Build attention_config dict from scratch
+        attention_config = {
+            "demo_attn": config.attention_config.get("demo_attn", False),
+            "triangle_residue_idx": config.attention_config.get("triangle_residue_idx"),
+        }
 
         # Main trunk + structure module
         if self.globals.is_multimer:
@@ -118,10 +126,13 @@ class AlphaFold(nn.Module):
                 **self.extra_msa_config["extra_msa_embedder"],
             )
             self.extra_msa_stack = ExtraMSAStack(
+                attention_config=attention_config,
                 **self.extra_msa_config["extra_msa_stack"],
             )
 
         self.evoformer = EvoformerStack(
+            attn_map_dir=config.attn_map_dir,
+            attention_config=attention_config,
             **self.config["evoformer_stack"],
         )
 
@@ -549,9 +560,11 @@ class AlphaFold(nn.Module):
 
         # Main recycling loop
         num_iters = batch["aatype"].shape[-1]
-        early_stop = False
+        if self.orig_config.num_recycles_save is not None:
+            num_iters = self.orig_config.num_recycles_save
         num_recycles = 0
         for cycle_no in range(num_iters):
+            print('RECYCLING STEP ', cycle_no)
             # Select the features for the current recycling cycle
             fetch_cur_batch = lambda t: t[..., cycle_no]
             feats = tensor_tree_map(fetch_cur_batch, batch)

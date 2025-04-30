@@ -30,7 +30,8 @@ from openfold.utils.tensor_utils import (
 
 class TriangleAttention(nn.Module):
     def __init__(
-        self, c_in, c_hidden, no_heads, starting=True, inf=1e9
+        self, c_in, c_hidden, no_heads, starting=True, inf=1e9,
+        attention_config=None,
     ):
         """
         Args:
@@ -54,7 +55,8 @@ class TriangleAttention(nn.Module):
         self.linear = Linear(c_in, self.no_heads, bias=False, init="normal")
 
         self.mha = Attention(
-            self.c_in, self.c_in, self.c_in, self.c_hidden, self.no_heads
+            self.c_in, self.c_in, self.c_in, self.c_hidden, self.no_heads,
+            attention_config=attention_config,
         )
 
     @torch.jit.ignore
@@ -103,6 +105,13 @@ class TriangleAttention(nn.Module):
         Returns:
             [*, I, J, C_in] output tensor
         """ 
+        # for getting attention and putting into dict
+        loop_idx = getattr(self, "loop_idx", 0)
+        if hasattr(self, "_attention_name"):
+            layer_name = f"{self._attention_name}_recycle_{loop_idx}"
+        else:
+            layer_name = None  # Or just skip attention logging completely for this layer (e.g., template layers)
+
         if mask is None:
             # [*, I, J]
             mask = x.new_ones(
