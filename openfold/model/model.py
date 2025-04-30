@@ -562,6 +562,7 @@ class AlphaFold(nn.Module):
         num_iters = batch["aatype"].shape[-1]
         if self.orig_config.num_recycles_save is not None:
             num_iters = self.orig_config.num_recycles_save
+        early_stop = False
         num_recycles = 0
         for cycle_no in range(num_iters):
             print('RECYCLING STEP ', cycle_no)
