@@ -1,3 +1,24 @@
+project:
+  name: "OpenFold Viz"
+  description: "OpenFold Attention Visualization"
+  homepage: https://github.com/vizfold/attention-viz-demo
+  authors:
+    - thayes68@gatech.edu
+    - pjaya001@odu.edu
+  tags:
+    - CISSE25
+
+workspace:
+  location: /workspace
+  resources:
+    min_cpu: 4
+    min_mem: 8192
+    min_gpu: 0
+    gpu_mem: 1024
+  model_collection: []
+  data_collection: []
+
+additional_dependencies:
 channels:
   - conda-forge
   - bioconda
