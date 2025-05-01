@@ -51,6 +51,7 @@ additional_dependencies:
     - pymol-open-source
     - deepspeed=0.14.5
     - dm-tree=0.1.6
+    - wget
   pip:
     - git+https://github.com/NVIDIA/dllogger.git
  
