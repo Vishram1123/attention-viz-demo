@@ -19,6 +19,7 @@ workspace:
   data_collection: []
 
 additional_dependencies:
+  modules: []
   conda:
     - cuda
     - gcc=12.4
