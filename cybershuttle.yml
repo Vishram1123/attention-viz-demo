@@ -53,6 +53,7 @@ additional_dependencies:
     - dm-tree=0.1.6
     - cutlass=3.6.0
     - wget
+    - matplotlib
   pip:
     - git+https://github.com/NVIDIA/dllogger.git
     - git+https://github.com/vizfold/attention-viz-demo

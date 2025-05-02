@@ -98,14 +98,14 @@ def check_residue_numbering(selection='all'):
         print("No residues found in selection!")
         return None
 
-    print(f"Detected residues: {stored_residues[:10]} ... (total {len(stored_residues)})")
+    # print(f"Detected residues: {stored_residues[:10]} ... (total {len(stored_residues)})")
 
     expected = list(range(1, len(stored_residues) + 1))
     if stored_residues == expected:
-        print("Residues are sequential starting at 1 — simple +1 mapping.")
+        # print("Residues are sequential starting at 1 — simple +1 mapping.")
         return 'plus_one'
     elif stored_residues[0] != 0 and stored_residues[0] != 1:
-        print(f"Residues start at {stored_residues[0]} — building index-to-residue mapping.")
+        # print(f"Residues start at {stored_residues[0]} — building index-to-residue mapping.")
         index_to_resi = {i: resi for i, resi in enumerate(stored_residues)}
         return index_to_resi
     else:
@@ -224,6 +224,7 @@ def plot_attention_grid(image_paths, titles, rows, cols, figure_title, output_fi
 
     fig.suptitle(figure_title, fontsize=14, weight='bold', y=1.02)
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    # plt.show()
     print(f"Saved summary grid to {output_file}")
 
 
@@ -274,6 +275,7 @@ def plot_pymol_attention_heads(
     pdb_file,
     attention_dir,
     output_dir,
+    protein,
     attention_type="msa_row",
     residue_indices=None,
     top_k=50,
@@ -298,20 +300,17 @@ def plot_pymol_attention_heads(
         msa_file = os.path.join(attention_dir, f"msa_row_attn_layer{layer_idx}.txt")
         msa_heads = load_all_heads(msa_file, top_k=top_k)
 
+        image_paths = []
         for head_idx, connections in msa_heads.items():
-            output_png = os.path.join(output_dir, f"msa_row_head_{head_idx}.png")
+            output_png = os.path.join(output_dir, f"msa_row_head_{head_idx}_layer_{layer_idx}_{protein}.png")
             master_plot(pdb_file, connections, output_png, base_color=(0.0, 0.0, 1.0))
+            image_paths.append(output_png)
 
         # Subplot
-        image_paths = sorted(
-            [os.path.join(output_dir, f) for f in os.listdir(output_dir)
-             if f.startswith("msa_row_head_") and f.endswith(".png")],
-            key=extract_head_number
-        )
         titles = [f"MSA Row Head {extract_head_number(p)}" for p in image_paths]
-        subplot_path = os.path.join(output_dir, "msa_row_heads_subplot.png")
+        subplot_path = os.path.join(output_dir, f"msa_row_heads_layer_{layer_idx}_{protein}_subplot.png")
         plot_attention_grid(image_paths, titles, rows=2, cols=4,
-                            figure_title="MSA Row Attention Heads", output_file=subplot_path)
+                            figure_title=f"{protein} MSA Row Attention Heads Layer {layer_idx}", output_file=subplot_path)
 
     elif attention_type == "triangle_start":
         assert residue_indices is not None, "Must supply residue_indices for triangle attention"
@@ -324,19 +323,18 @@ def plot_pymol_attention_heads(
 
             tri_heads = load_all_heads(tri_file, top_k=top_k)
             res_pngs = []
-
             for head_idx, connections in tri_heads.items():
-                output_png = os.path.join(output_dir, f"tri_start_residue_{res_idx}_head_{head_idx}.png")
+                output_png = os.path.join(output_dir, f"tri_start_residue_{res_idx}_head_{head_idx}_layer_{layer_idx}_{protein}.png")
                 master_plot(pdb_file, connections, output_png,
                             base_color=(0.0, 0.0, 1.0),
                             highlight_res_index=res_idx)
                 res_pngs.append(output_png)
 
             # Subplot for this residue
-            subplot_path = os.path.join(output_dir, f"triangle_start_residue_{res_idx}_subplot.png")
+            subplot_path = os.path.join(output_dir, f"triangle_start_residue_{res_idx}_layer_{layer_idx}_{protein}_subplot.png")
             titles = [f"Head {extract_head_number(p)}" for p in res_pngs]
             plot_attention_grid(res_pngs, titles, rows=1, cols=len(res_pngs),
-                                figure_title=f"Triangle Start Attention — Residue {res_idx}",
+                                figure_title=f"Triangle Start Attention Heads Layer {layer_idx} — Residue {res_idx}",
                                 output_file=subplot_path)
 
 
@@ -349,6 +347,7 @@ if __name__ == "__main__":
     residue_indices = [18, 39, 51, 79, 138, 159]
     layer_idx = 47
     topk = 50
+    protein = '6KWC'
 
     # Run for MSA Row Attention
     print('Making visuals for MSA Row Attention...')
@@ -356,6 +355,7 @@ if __name__ == "__main__":
         pdb_file=pdb_file,
         attention_dir=attention_dir,
         output_dir=output_msa,
+        protein=protein,
         attention_type="msa_row",
         top_k=topk,
         layer_idx=layer_idx
@@ -367,6 +367,7 @@ if __name__ == "__main__":
         pdb_file=pdb_file,
         attention_dir=attention_dir,
         output_dir=output_tri,
+        protein=protein,
         attention_type="triangle_start",
         residue_indices=residue_indices,
         top_k=topk,

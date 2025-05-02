@@ -43,7 +43,8 @@ def parse_fasta_sequence(fasta_path):
 
 # ========== Arc Plotting ==========
 def plot_arc_diagram_with_labels(connections, residue_sequence, output_file='arc.png',
-                                 highlight_residue_index=None):
+                                 highlight_residue_index=None, save_to_png=True,
+                                 plt_title=None):
     if not connections:
         print("No connections to plot.")
         return
@@ -82,15 +83,21 @@ def plot_arc_diagram_with_labels(connections, residue_sequence, output_file='arc
         tick_labels[highlight_residue_index].set_fontweight('bold')
 
     ax.set_ylim(0, None)
-    ax.set_ylabel('Interaction Strength')
-    ax.set_title(f'Residue Attention (n={plotted})')
+    ax.set_ylabel('Attention Strength')
+
+    if plt_title is not None:
+        ax.set_title(plt_title)
+    else:
+        ax.set_title(f'Residue Attention (n={plotted})')
 
     ax.tick_params(axis='x', which='both', length=0)
     ax.set_yticks([])
 
     plt.tight_layout()
-    plt.savefig(output_file, dpi=300)
-    print(f"[Saved] {output_file}")
+    # plt.show()
+    if save_to_png:
+        plt.savefig(output_file, dpi=300)
+        print(f"[Saved] {output_file}")
     plt.close()
 
 
@@ -99,10 +106,12 @@ def generate_arc_diagrams(
     attention_dir,
     residue_sequence,
     output_dir,
+    protein,
     attention_type="msa_row",  # or "triangle_start"
     residue_indices=None,      # only for triangle
     top_k=50,
     layer_idx=47,
+    save_to_png=True,
 ):
     os.makedirs(output_dir, exist_ok=True)
 
@@ -112,8 +121,10 @@ def generate_arc_diagrams(
         pngs = []
 
         for head_idx, connections in heads.items():
-            out_png = os.path.join(output_dir, f"msa_row_head_{head_idx}_arc.png")
-            plot_arc_diagram_with_labels(connections, residue_sequence, output_file=out_png)
+            out_png = os.path.join(output_dir, f"msa_row_head_{head_idx}_layer_{layer_idx}_{protein}_arc.png")
+            plt_title = f"Residue Attention: {protein} MSA Row (Head {head_idx} Layer {layer_idx})"
+            plot_arc_diagram_with_labels(connections, residue_sequence, output_file=out_png,
+                                         save_to_png=save_to_png, plt_title=plt_title)
             pngs.append(out_png)
 
     elif attention_type == "triangle_start":
@@ -129,9 +140,10 @@ def generate_arc_diagrams(
             pngs = []
 
             for head_idx, connections in heads.items():
-                out_png = os.path.join(output_dir, f"tri_start_res_{res_idx}_head_{head_idx}_arc.png")
+                out_png = os.path.join(output_dir, f"tri_start_res_{res_idx}_head_{head_idx}_layer_{layer_idx}_{protein}_arc.png")
+                plt_title = f"Residue Attention: {protein} Tri Start (Head {head_idx} Layer {layer_idx})"
                 plot_arc_diagram_with_labels(connections, residue_sequence, output_file=out_png,
-                             highlight_residue_index=res_idx)
+                             highlight_residue_index=res_idx, save_to_png=save_to_png, plt_title=plt_title)
                 pngs.append(out_png)
 
 
@@ -142,6 +154,7 @@ if __name__ == "__main__":
     msa_output_dir = "/u/thayes/vizfold/demo_plots_msa_row"
     tri_output_dir = "/u/thayes/vizfold/demo_plots_tri_start"
     fasta_path = "./examples/monomer/fasta_dir/6kwc.fasta"
+    protein = '6KWC'
 
     # Load sequence
     residue_seq = parse_fasta_sequence(fasta_path)
@@ -152,6 +165,7 @@ if __name__ == "__main__":
         attention_dir=attention_dir,
         residue_sequence=residue_seq,
         output_dir=msa_output_dir,
+        protein=protein,
         attention_type="msa_row",
         top_k=topk,
         layer_idx=layer_idx
@@ -163,6 +177,7 @@ if __name__ == "__main__":
         attention_dir=attention_dir,
         residue_sequence=residue_seq,
         output_dir=tri_output_dir,
+        protein=protein,
         attention_type="triangle_start",
         residue_indices=[18, 39, 51, 79, 138, 159],
         top_k=topk,
