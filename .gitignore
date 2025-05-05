@@ -10,3 +10,12 @@ data
 openfold/resources/
 tests/test_data/
 cutlass/
+*.txt
+*.png
+*.pdb
+*.json
+*.pkl
+*.fasta
+*.sto
+*.a3m
+*.hhr
